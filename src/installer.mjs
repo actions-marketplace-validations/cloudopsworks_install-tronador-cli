@@ -30,12 +30,16 @@ function validateInstallDir (installDir) {
   return installDir
 }
 
-async function download (url, description, retryOptions) {
+async function download (url, description, token, retryOptions) {
+  // Authenticated downloads let GitHub attribute the traffic to the token
+  // rather than the shared runner IP. http-client drops the header when GitHub
+  // redirects to its asset CDN, so the token never leaves the GitHub host.
+  const auth = token ? `token ${token}` : undefined
   return withRetry(
     description,
     async () => {
       try {
-        return await tc.downloadTool(url)
+        return await tc.downloadTool(url, undefined, auth)
       } catch (error) {
         if (error instanceof tc.HTTPError) {
           throw new RequestError(`HTTP ${error.httpStatusCode} for ${url}`, {
@@ -83,14 +87,14 @@ async function findBinary (directory, binaryName) {
  * Downloads a release, verifies it against the published SHA256SUMS manifest,
  * and returns the directory the executable was cached in.
  */
-async function downloadRelease ({ tag, releaseVersion, platform, architecture, binaryName, repository, serverBaseUrl, retryOptions, useToolCache }) {
+async function downloadRelease ({ tag, releaseVersion, platform, architecture, binaryName, repository, serverBaseUrl, token, retryOptions, useToolCache }) {
   const archiveName = `${PROJECT_NAME}_${releaseVersion}_${platform}_${architecture}.zip`
   const checksumsName = `${PROJECT_NAME}_${releaseVersion}_SHA256SUMS`
   const baseUrl = `${serverBaseUrl}/${repository}/releases/download/${tag}`
 
   core.info(`Downloading Tronador ${tag} for ${platform}/${architecture}`)
-  const archivePath = await download(`${baseUrl}/${archiveName}`, `Downloading ${archiveName}`, retryOptions)
-  const checksumsPath = await download(`${baseUrl}/${checksumsName}`, `Downloading ${checksumsName}`, retryOptions)
+  const archivePath = await download(`${baseUrl}/${archiveName}`, `Downloading ${archiveName}`, token, retryOptions)
+  const checksumsPath = await download(`${baseUrl}/${checksumsName}`, `Downloading ${checksumsName}`, token, retryOptions)
 
   const manifest = await fs.readFile(checksumsPath, 'utf8')
   const expected = findExpectedChecksum(manifest, archiveName)
@@ -151,6 +155,7 @@ export async function install ({
       binaryName,
       repository,
       serverBaseUrl,
+      token,
       retryOptions,
       useToolCache
     })

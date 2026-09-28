@@ -10,7 +10,7 @@
 
 [![cloudopsworks][logo]](https://cloudopsworks.co/)
 
-# install-tronador-cli [![Latest Release](https://img.shields.io/github/v/release/cloudopsworks/install-tronador-cli?style=for-the-badge)](https://github.com/cloudopsworks/install-tronador-cli/releases/latest) [![CI](https://img.shields.io/github/actions/workflow/status/cloudopsworks/install-tronador-cli/ci.yml?branch=main&style=for-the-badge)](https://github.com/cloudopsworks/install-tronador-cli/actions/workflows/ci.yml)
+# install-tronador-cli [![Latest Release](https://img.shields.io/github/v/release/cloudopsworks/install-tronador-cli?style=for-the-badge)](https://github.com/cloudopsworks/install-tronador-cli/releases/latest) [![CI](https://img.shields.io/github/actions/workflow/status/cloudopsworks/install-tronador-cli/ci.yml?branch=master&style=for-the-badge)](https://github.com/cloudopsworks/install-tronador-cli/actions/workflows/ci.yml)
 
 
 A GitHub Action that installs the CloudOps Works Tronador CLI from verified GitHub Release artifacts.
@@ -45,7 +45,7 @@ It's 100% Open Source and licensed under the [APACHE2](LICENSE).
 - Supports Linux, macOS, and Windows runners on `amd64` and `arm64`.
 - Verifies each downloaded release archive against its published `SHA256SUMS` manifest before adding the executable to `PATH`.
 - Caches the executable in the runner tool cache, so repeat installs of the same release do no network I/O.
-- Resists GitHub's HTTP 403 rate limiting: authenticated release lookups, a quota-free fallback, and rate-limit aware retries.
+- Resists GitHub's HTTP 403 rate limiting: authenticated release lookups and downloads, a quota-free fallback, and rate-limit aware retries.
 
 ## Usage
 
@@ -77,13 +77,16 @@ Both `0.2.3` and `v0.2.3` are accepted:
 Resolving `latest` needs a release lookup, and anonymous lookups are capped at 60 requests
 per hour **per runner IP address**, which GitHub-hosted runners share. Busy repositories hit
 that ceiling and fail with `HTTP 403: API rate limit exceeded`. The action avoids this in
-four ways:
+five ways:
 
-- The `token` input defaults to `${{ github.token }}`, so the lookup is authenticated and
+- On github.com the `token` input defaults to `${{ github.token }}`, so the lookup is authenticated and
   billed against the token's 5,000 requests per hour instead of the shared runner IP.
+- The release archive and its `SHA256SUMS` manifest are requested with the same token, so
+  GitHub can attribute downloads to it rather than to the shared runner IP. The token is sent
+  only to GitHub: it is dropped when GitHub redirects the download to its asset CDN.
 - If the API is rate limited anyway, the tag is resolved from the `releases/latest` redirect,
   which spends no API quota at all.
-- Pinning `version` skips the lookup entirely: release downloads are not API requests.
+- Pinning `version` skips the lookup entirely.
 - A release already in the runner tool cache is reused without any network request.
 
 Retries honour the `Retry-After` and `X-RateLimit-Reset` headers rather than backing off
@@ -95,7 +98,7 @@ blindly, and give up instead of stalling a job for a full rate-limit window.
 | --- | --- | --- | --- |
 | `version` | No | `latest` | A Tronador release tag or version. `latest` resolves the latest stable GitHub release. |
 | `install-dir` | No | Runner tool cache | Absolute directory where the executable is installed. The directory is added to `PATH`. |
-| `token` | No | `${{ github.token }}` | Token used to authenticate the release lookup. Unused when `version` is pinned. Set to `''` to force anonymous lookups. |
+| `token` | No | `${{ github.token }}` on github.com, empty on GitHub Enterprise Server | Token used to authenticate the release lookup and the release downloads. Set to `''` to force anonymous requests. |
 
 ### Outputs
 
@@ -147,8 +150,9 @@ either `README.md` or `dist/` is out of date.
 ### Supply an explicit token
 
 The default `${{ github.token }}` is enough for GitHub-hosted runners. Pass a
-different token when the workflow runs somewhere that token is unavailable, such
-as a self-hosted runner outside the repository's installation:
+github.com token when the workflow runs on GitHub Enterprise Server, where the
+default falls back to anonymous requests because the server's own token is not
+valid on github.com:
 
 ```yaml
 - uses: cloudopsworks/install-tronador-cli@v1

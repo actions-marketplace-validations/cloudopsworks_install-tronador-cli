@@ -23,19 +23,30 @@ function rateLimitHeaders () {
 
 /**
  * Serves both the REST API and the release download host for one repository.
- * `mode` selects what each surface does: 'ok', 'rate-limit', or 'error'.
+ * `api` and `releases` select what each surface does: 'ok', 'rate-limit', or
+ * 'error'. `throttledDownloads` answers that many asset downloads with a 403
+ * before serving them. `cdnRedirect` redirects asset downloads to another
+ * hostname (localhost instead of 127.0.0.1), the way github.com hands them off
+ * to its asset CDN.
  */
 export async function startGitHubServer ({
   tag = 'v9.8.7',
   assets = {},
   api = 'ok',
-  releases = 'ok'
+  releases = 'ok',
+  throttledDownloads = 0,
+  cdnRedirect = false
 } = {}) {
   const requests = []
+  // Authorization header per request path, in request order.
+  const authorizations = []
+  let throttled = 0
+  let port
 
   const server = http.createServer((request, response) => {
     const url = new URL(request.url, 'http://localhost')
     requests.push(url.pathname)
+    authorizations.push({ path: url.pathname, authorization: request.headers.authorization })
 
     if (url.pathname === `/api/repos/${REPOSITORY}/releases/latest`) {
       if (api === 'rate-limit') {
@@ -64,7 +75,25 @@ export async function startGitHubServer ({
       return
     }
 
+    if (url.pathname.startsWith('/cdn/')) {
+      const asset = assets[url.pathname.slice('/cdn'.length)]
+      response.writeHead(asset ? 200 : 404, { 'content-type': 'application/octet-stream' })
+      response.end(asset ?? '')
+      return
+    }
+
     const asset = assets[url.pathname]
+    if (asset && cdnRedirect) {
+      response.writeHead(302, { location: `http://localhost:${port}/cdn${url.pathname}` })
+      response.end()
+      return
+    }
+    if (asset && throttled < throttledDownloads) {
+      throttled += 1
+      response.writeHead(403, { 'content-type': 'text/plain' })
+      response.end('rate limited')
+      return
+    }
     if (asset) {
       response.writeHead(200, {
         'content-type': 'application/octet-stream',
@@ -80,12 +109,13 @@ export async function startGitHubServer ({
 
   server.listen(0, '127.0.0.1')
   await once(server, 'listening')
-  const { port } = server.address()
+  port = server.address().port
 
   return {
     apiBaseUrl: `http://127.0.0.1:${port}/api`,
     serverBaseUrl: `http://127.0.0.1:${port}/gh`,
     requests,
+    authorizations,
     async close () {
       server.close()
       await once(server, 'close')
