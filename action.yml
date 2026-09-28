@@ -13,11 +13,13 @@ inputs:
     default: ''
   token:
     description: >-
-      Token used to resolve the latest release through the GitHub API. Authenticated requests are
-      rate limited per token instead of per runner IP address, which avoids HTTP 403 rate limit
-      failures on busy runners. Not used when `version` is pinned to a release tag.
+      Token used to authenticate the latest-release lookup and the release downloads. Authenticated
+      requests are rate limited per token instead of per runner IP address, which avoids HTTP 403
+      rate limit failures on busy runners. Defaults to `github.token` on github.com and to anonymous
+      access on GitHub Enterprise Server, whose token github.com would reject. Set to '' to force
+      anonymous requests.
     required: false
-    default: ${{ github.token }}
+    default: ${{ github.server_url == 'https://github.com' && github.token || '' }}
 
 outputs:
   version:

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { after, before, beforeEach, describe, it } from 'node:test'
+import { after, afterEach, before, beforeEach, describe, it } from 'node:test'
 
 import { install } from '../src/installer.mjs'
 import { resolvePlatform } from '../src/platform.mjs'
@@ -18,11 +18,13 @@ before(async () => {
   originalEnv = { ...process.env }
 })
 
-after(async () => {
+after(() => {
   process.env = originalEnv
-  if (workspace) {
-    await fs.rm(workspace, { recursive: true, force: true })
-  }
+})
+
+afterEach(async () => {
+  // Retries ride out Windows file locks held briefly after extraction.
+  await fs.rm(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 })
 
 beforeEach(async () => {
@@ -46,6 +48,10 @@ async function serve (options = {}) {
     corruptChecksum: options.corruptChecksum
   })
   return startGitHubServer({ ...options, tag, assets })
+}
+
+function downloadAuthorizations (server) {
+  return server.authorizations.filter(({ path }) => path.includes('/releases/download/'))
 }
 
 async function installWith (server, overrides = {}) {
@@ -204,6 +210,79 @@ describe('install', () => {
         /Checksum verification failed/
       )
       await assert.rejects(fs.access(path.join(installDir, binaryName)))
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('authenticates the API lookup and both release downloads with the token', async () => {
+    const server = await serve()
+    try {
+      await installWith(server, { version: 'latest', token: 'test-token' })
+
+      const api = server.authorizations.find(({ path }) => path.startsWith('/api/'))
+      assert.equal(api.authorization, 'Bearer test-token')
+
+      const downloads = downloadAuthorizations(server)
+      assert.equal(downloads.length, 2, 'expected the archive and the checksum manifest')
+      for (const download of downloads) {
+        assert.equal(download.authorization, 'token test-token', `${download.path} was not authenticated`)
+      }
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('authenticates downloads of a pinned version with the token', async () => {
+    const server = await serve({ tag: 'v1.2.3' })
+    try {
+      await installWith(server, { version: '1.2.3', token: 'test-token' })
+
+      const downloads = downloadAuthorizations(server)
+      assert.equal(downloads.length, 2)
+      assert.ok(downloads.every(({ authorization }) => authorization === 'token test-token'))
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('downloads anonymously when no token is supplied', async () => {
+    const server = await serve({ tag: 'v1.2.3' })
+    try {
+      await installWith(server, { version: '1.2.3', token: '' })
+
+      assert.ok(server.authorizations.length > 0)
+      assert.ok(server.authorizations.every(({ authorization }) => authorization === undefined))
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('retries a throttled download', async () => {
+    const server = await serve({ tag: 'v1.2.3', throttledDownloads: 1 })
+    try {
+      const result = await installWith(server, { version: '1.2.3', token: 'test-token' })
+
+      assert.equal(result.tag, 'v1.2.3')
+      const downloads = downloadAuthorizations(server)
+      assert.equal(downloads.length, 3, 'the throttled archive download is retried once')
+      assert.ok(downloads.every(({ authorization }) => authorization === 'token test-token'))
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('drops the token when a download redirects to another host', async () => {
+    const server = await serve({ tag: 'v1.2.3', cdnRedirect: true })
+    try {
+      await installWith(server, { version: '1.2.3', token: 'test-token' })
+
+      const github = downloadAuthorizations(server).filter(({ path }) => path.startsWith('/gh/'))
+      const cdn = downloadAuthorizations(server).filter(({ path }) => path.startsWith('/cdn/'))
+      assert.equal(github.length, 2)
+      assert.equal(cdn.length, 2)
+      assert.ok(github.every(({ authorization }) => authorization === 'token test-token'))
+      assert.ok(cdn.every(({ authorization }) => authorization === undefined), 'the token leaked to the CDN host')
     } finally {
       await server.close()
     }

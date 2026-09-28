@@ -3,19 +3,46 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main, master]
+    branches: [master]
 
 permissions:
   contents: read
 
 jobs:
   unit:
-    name: Installer tests
+    name: Unit tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  build:
+    name: Bundle and README
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Verify dist/ is up to date
+        run: |
+          npm run build
+          test -z "$(git status --porcelain -- dist/)" || { git status -- dist/; git diff -- dist/; exit 1; }
       - name: Install Tronador for documentation
         uses: ./
         with:
@@ -25,18 +52,18 @@ jobs:
           tronador readme build
           git diff --exit-code -- README.md
           tronador readme lint
-      - name: Run installer tests
-        run: bash test/install.sh
 
   integration:
     name: ${{ matrix.os }} (${{ matrix.version }})
-    needs: unit
+    needs: [unit, build]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
+            version: latest
+          - os: ubuntu-24.04-arm
             version: latest
           - os: macos-latest
             version: 0.2.3
@@ -60,3 +87,18 @@ jobs:
           if (-not (Test-Path -LiteralPath $env:TRONADOR_PATH)) {
             throw 'The action output path does not exist.'
           }
+
+  integration-anonymous:
+    name: Anonymous install (ubuntu-latest)
+    needs: [unit, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Tronador without a token
+        uses: ./
+        with:
+          version: latest
+          token: ''
+      - run: tronador version
